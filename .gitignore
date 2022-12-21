@@ -1,0 +1,6 @@
+__pycache__
+.venv
+secrets.json
+tracker copy.csv
+tracker.csv
+output.log
