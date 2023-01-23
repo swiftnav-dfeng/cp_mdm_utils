@@ -8,6 +8,8 @@ from threading import Thread
 import csv
 import queue
 
+NUM_THREADS = 2
+
 #logging.basicConfig(filename='output.log', level=logging.DEBUG)
 log = logging.getLogger()
 log.setLevel(logging.DEBUG)
@@ -16,41 +18,56 @@ handler = logging.FileHandler('output.log')
 handler.setFormatter(log_formatter)
 log.addHandler(handler)
 
+results = {}
 
 class MdmResetThread(Thread):
-    def __init__(self, host, port, username, password, name):
-        super(MdmResetThread, self).__init__()
+    def __init__(self, name, q:queue.Queue, result_callback, daemon=True):
+        super(MdmResetThread, self).__init__(name=name, daemon=daemon)
 
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
-        self.name = name
+        self.q = q
 
-        self.result = None
+        self.result_callback = result_callback
+
+        self.item = {
+            'station':None,
+            'host':None,
+            'port':None,
+            'username':None,
+            'password':None
+            }
 
     def run(self):
-        self.result = self.task()
+        while True:
+            try:
+                self.item = self.q.get(timeout=5)
+            except queue.Empty as e:
+                log.info(e)
+                log.info(f'queue is empty, {self.name} terminating')
+                return
+
+            result = self.task()
+            self.result( (self.item['station'],result), self.result_callback )
+            self.q.task_done()
         
     def task(self):
         try:
             self.reset_routine()
         except RuntimeError as e:
-            log.warning(f'Exiting: {e}')
+            log.warning(f"{self.item['station']} Exiting: {e}")
             return 1
         except TimeoutError as e:
-            log.warning(f'Exiting: {e}')
+            log.warning(f"{self.item['station']} Exiting: {e}")
             return 2
         except Exception as e:
-            log.error(f'Exiting: {e}')
+            log.error(f"{self.item['station']} Exiting: {e}")
             return 3
 
-        log.info("Reset success")
+        log.info(f"{self.item['station']} Reset success")
         return 0
         
 
     def reset_routine(self):
-        router = CPUtils(self.host, self.port, self.username, self.password)
+        router = CPUtils(self.item['host'], self.item['port'], self.item['username'], self.item['password'])
         router.update_devices()
 
         eth_uptime = router.get_eth_uptime()
@@ -84,15 +101,27 @@ class MdmResetThread(Thread):
 
         raise TimeoutError('Timeout waiting for modem reset')
 
+    def result(self, result, callback:callable):
+        callback(result)
+
+def result_collector(result):
+    results[result[0]] = result[1]
+
 
 def get_stations(file):
+    # file is a csv generate from this Sitetracker tracker:
+    # https://sitetracker-swiftnavigation.lightning.force.com/lightning/r/sitetracker__StGridView__c/a0q4P00000T2hTXQAZ/view
+    # Filter Product Name to IBR600C (only modem used in EU)
+
+
     stations = {}
     with open(file) as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row['Status'] == 'Installed':
-                print(row)
-                stations[row['NetCloud Custom Name']] = row['IP Address']
+            if row['Product Name'] == 'IBR600C':
+                if row['Status'] == 'Installed':
+                    print(row)
+                    stations[row['NetCloud Custom Name']] = row['IP Address']
 
     return stations
 
@@ -106,24 +135,35 @@ if __name__ == "__main__":
         password = j['password']
 
     file = 'tracker.csv'
+
     stations = get_stations(file)
 
     threads = []
-    num_stations = 0
+    max_t = min(NUM_THREADS, len(stations))
+
+    q = queue.Queue()
+
+    for i in range(max_t):
+        worker = MdmResetThread(f'thread-{i}', q, result_collector, daemon=True)
+        worker.start()
+        threads.append(worker)
+
     for station, host in stations.items():
-        threads.append(MdmResetThread(host, port, username, password, name=f'thread-{station}'))
-        num_stations += 1
+        item = {
+            'station':station,
+            'host':host,
+            'port':8443,
+            'username':username,
+            'password':password
+        }
+        q.put(item)
 
-    for thread in threads:
-        thread.start()
+    q.join()
 
-    for thread in threads:
-        thread.join()
+    for t in threads:
+        t.join()
 
-    results = {}
-    for thread in threads:
-        results[thread.name] = thread.result
 
-    logging.info("finished")
-    logging.info(f'num_stations {num_stations}, num_results {len(results)}')
-    logging.info(results)
+    log.info("finished")
+    log.info(f'num_stations {len(stations)}, num_results {len(results)}')
+    log.info(results)
