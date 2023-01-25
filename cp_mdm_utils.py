@@ -45,19 +45,3 @@ class CPUtils():
 
         resp = self.session.get(self.host + endpoint)
         self.device_stat = json.loads(resp.text)
-
-if __name__ == "__main__":
-    username = ''
-    password = ''
-    with open('secrets.json', 'r') as f:
-        j = json.load(f)
-        username = j['username']
-        password = j['password']
-
-    host = '10.11.12.253'
-    port = 8443
-    dev = CPUtils(host, port, username, password)
-    devices = dev.update_devices()
-    print(devices)
-    print(dev.get_modem_uptime())
-    print(dev.get_eth_uptime())
