@@ -45,3 +45,10 @@ class CPUtils():
 
         resp = self.session.get(self.host + endpoint)
         self.device_stat = json.loads(resp.text)
+
+    def get_conntrack(self):
+        endpoint = f'status/firewall/conntrack'
+
+        resp = self.session.get(self.host + endpoint)
+        resp.raise_for_status()
+        return json.loads(resp.text)
